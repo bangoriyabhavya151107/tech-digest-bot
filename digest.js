@@ -1,8 +1,8 @@
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 
-if (!GROQ_API_KEY || !DISCORD_BOT_TOKEN || !DISCORD_CHANNEL_ID) {
+if (!GEMINI_API_KEY || !DISCORD_BOT_TOKEN || !DISCORD_CHANNEL_ID) {
   console.error("Missing required environment variables.");
   process.exit(1);
 }
@@ -35,7 +35,7 @@ async function runDigest() {
   const ghData = await ghRes.json();
   const hnData = await hnRes.json();
 
-  // 3. Clean data (same logic as your n8n JavaScript node)
+  // 3. Clean data
   const topRepos = (ghData.items || []).slice(0, 5).map((repo) => ({
     name: repo.full_name,
     stars: repo.stargazers_count,
@@ -56,49 +56,50 @@ async function runDigest() {
       hnDiscussion: `https://news.ycombinator.com/item?id=${story.objectID}`,
     }));
 
-  // 4. Send to Groq AI (openai/gpt-oss-120b)
-  console.log("Generating digest with Groq AI...");
+  // 4. Send to Google Gemini API (Free Tier)
+  console.log("Generating digest with Gemini AI...");
   const prompt = `You are a Senior Staff Engineer curating a high-signal Daily Tech & Open-Source Digest for Discord.
 
 Analyze today's trending GitHub repositories and Hacker News innovations:
 GitHub Repos: ${JSON.stringify(topRepos)}
 Tech Innovations: ${JSON.stringify(topInnovations)}
 
-Create a clean, Discord-formatted briefing under 1,900 characters (so it fits Discord's message limit) with:
+Create a clean, Discord-formatted briefing strictly under 1,850 characters with:
 1. 🏆 **REPO OF THE DAY**: Pick the single most useful or innovative GitHub repo. State its name, star count, primary language, the exact engineering problem it solves, and a clickable link.
 2. ⚡ **3 RUNNER-UP REPOS**: One bullet each with repo link, stars, language, and a 1-sentence takeaway.
 3. 💡 **BEST TECH SOLUTION / INNOVATION TODAY**: Pick the top 2 engineering breakthroughs or tools from the Hacker News list, explain why they matter to a developer, and link both the article and HN discussion.
 4. 💬 End with a 1-line prompt reminding me what technical question I could ask you about today's picks.`;
 
-  const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${GROQ_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-oss-120b",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-    }),
-  });
+  const geminiRes = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+      }),
+    }
+  );
 
-  if (!groqRes.ok) {
-    const errText = await groqRes.text();
-    throw new Error(`Groq API error (${groqRes.status}): ${errText}`);
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text();
+    throw new Error(`Gemini API error (${geminiRes.status}): ${errText}`);
   }
 
-  const groqData = await groqRes.json();
-  let digestMessage = groqData.choices?.[0]?.message?.content?.trim();
+  const geminiData = await geminiRes.json();
+  let digestMessage = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
-  if (!digestMessage) throw new Error("Groq returned an empty response.");
+  if (!digestMessage) throw new Error("Gemini returned an empty response.");
 
-  // Safety check for Discord's 2,000-character limit
+  // Hard safety cap for Discord's 2,000-character limit
   if (digestMessage.length > 1990) {
     digestMessage = digestMessage.slice(0, 1987) + "...";
   }
 
-  // 5. Post to Discord using your TechDigestAi Bot Token
+  // 5. Post to Discord
   console.log("Sending digest to Discord...");
   const discordRes = await fetch(
     `https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages`,
